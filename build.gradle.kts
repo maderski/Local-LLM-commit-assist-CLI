@@ -4,11 +4,14 @@ plugins {
     application
 }
 
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
 group = "com.maderskitech"
 version = "0.1.0"
 
-kotlin {
-    jvmToolchain(21)
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
 }
 
 repositories {
@@ -26,4 +29,10 @@ application {
 
 tasks.test {
     useJUnitPlatform()
+}
+
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile>().configureEach {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_21)
+    }
 }
