@@ -33,6 +33,21 @@ build/install/llm-commit/bin/llm-commit
 
 You can symlink that script somewhere on your `PATH` if you want a global `llm-commit` command.
 
+Example:
+
+```shell
+mkdir -p ~/.local/bin
+ln -s "$(pwd)/build/install/llm-commit/bin/llm-commit" ~/.local/bin/llm-commit
+```
+
+Your shell must include `~/.local/bin` in `PATH` for `llm-commit` to work from any folder. You can check with:
+
+```shell
+echo $PATH
+```
+
+If `~/.local/bin` is not listed there, symlink `llm-commit` into a directory that already is, such as `/usr/local/bin`.
+
 ## Usage
 
 From inside a git repository:
