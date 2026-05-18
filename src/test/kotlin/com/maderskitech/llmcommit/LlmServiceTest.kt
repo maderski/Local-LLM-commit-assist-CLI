@@ -17,6 +17,30 @@ class LlmServiceTest {
         .build()
 
     @Test
+    fun generateCommitMessage_includesNoReasoningInstructionInPrompt() {
+        var requestBody = ""
+        val server = testServer(
+            modelsResponse = """{"data":[{"id":"model","context_length":32768}]}""",
+            completionHandler = { body, _ ->
+                requestBody = body
+                response(200, """{"choices":[{"message":{"content":"Keep prompts lean\n\n- Avoid extra reasoning output"}}]}""")
+            },
+        )
+
+        server.use {
+            val service = LlmService(client)
+            val result = service.generateCommitMessage(
+                address = server.baseUrl,
+                modelName = "model",
+                diff = "diff --git a/file.txt b/file.txt\n@@ -1 +1 @@\n-old\n+new",
+            )
+
+            assertTrue(result.isSuccess)
+            assertContains(requestBody, "Do not use reasoning tokens, chain-of-thought, or explain your thinking.")
+        }
+    }
+
+    @Test
     fun generateCommitMessage_includesCompactionNotice_forOversizedDiff() {
         var requestBody = ""
         val server = testServer(
@@ -39,6 +63,52 @@ class LlmServiceTest {
 
             assertTrue(result.isSuccess)
             assertContains(requestBody, "[diff truncated to fit model context:")
+        }
+    }
+
+    @Test
+    fun generateCommitMessage_parsesJsonPayloadReturnedAsContent() {
+        val server = testServer(
+            modelsResponse = """{"data":[{"id":"model","context_length":32768}]}""",
+            completionHandler = { _, _ ->
+                response(200, """{"choices":[{"message":{"content":"{\"summary\":\"Tighten prompt limits\",\"description\":\"- Compact oversized diffs\"}"}}]}""")
+            },
+        )
+
+        server.use {
+            val service = LlmService(client)
+            val result = service.generateCommitMessage(
+                address = server.baseUrl,
+                modelName = "model",
+                diff = "diff --git a/file.txt b/file.txt\n@@ -1 +1 @@\n-old\n+new",
+            )
+
+            assertTrue(result.isSuccess)
+            assertEquals("Tighten prompt limits", result.getOrThrow().summary)
+            assertEquals("- Compact oversized diffs", result.getOrThrow().description)
+        }
+    }
+
+    @Test
+    fun generateCommitMessage_parsesSingleLineSummaryAndDescription() {
+        val server = testServer(
+            modelsResponse = """{"data":[{"id":"model","context_length":32768}]}""",
+            completionHandler = { _, _ ->
+                response(200, """{"choices":[{"message":{"content":"Tighten prompt limits - Compact oversized diffs"}}]}""")
+            },
+        )
+
+        server.use {
+            val service = LlmService(client)
+            val result = service.generateCommitMessage(
+                address = server.baseUrl,
+                modelName = "model",
+                diff = "diff --git a/file.txt b/file.txt\n@@ -1 +1 @@\n-old\n+new",
+            )
+
+            assertTrue(result.isSuccess)
+            assertEquals("Tighten prompt limits", result.getOrThrow().summary)
+            assertEquals("- Compact oversized diffs", result.getOrThrow().description)
         }
     }
 
