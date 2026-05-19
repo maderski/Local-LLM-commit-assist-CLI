@@ -150,7 +150,7 @@ class LlmService(
         val base = address.trimEnd('/')
         val lmStudioEndpoints = if (base.endsWith("/v1")) {
             val root = base.dropLast(3)
-            listOf("$root/api/v1/models/$model", "$root/api/v0/models/$model")
+            listOf("$root/api/v1/models", "$root/api/v1/models/$model", "$root/api/v0/models/$model")
         } else emptyList()
         val endpoints = listOf("$base/models", "$base/models/$model") + lmStudioEndpoints
 
@@ -179,7 +179,21 @@ class LlmService(
             val data = root["data"] as? JsonArray
             data?.firstOrNull { element ->
                 (element as? JsonObject)?.get("id")?.jsonPrimitive?.contentOrNull() == model
-            }?.let { candidates += it }
+            }?.let { candidate ->
+                candidates += candidate
+                (candidate as? JsonObject)?.get("config")?.let(candidates::add)
+            }
+
+            val models = root["models"] as? JsonArray
+            models?.firstOrNull { element ->
+                val candidate = element as? JsonObject ?: return@firstOrNull false
+                val id = candidate["id"]?.jsonPrimitive?.contentOrNull()
+                val key = candidate["key"]?.jsonPrimitive?.contentOrNull()
+                id == model || key == model
+            }?.let { candidate ->
+                candidates += candidate
+                (candidate as? JsonObject)?.get("config")?.let(candidates::add)
+            }
         }
         candidates += root
 

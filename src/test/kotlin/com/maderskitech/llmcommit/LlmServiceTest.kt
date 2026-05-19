@@ -213,8 +213,53 @@ class LlmServiceTest {
         }
     }
 
+    @Test
+    fun generateCommitMessage_parsesLmStudioV1ModelLists() {
+        val completionCalls = AtomicInteger(0)
+        val server = testServer(
+            modelsResponse = """{"data":[]}""",
+            modelDetailResponse = response(404, """{"error":"not found"}"""),
+            additionalContexts = mapOf(
+                "/api/v1/models" to response(
+                    200,
+                    """{"models":[{"key":"model","config":{"context_length":2048}}]}""",
+                ),
+            ),
+            completionHandler = { body, _ ->
+                completionCalls.incrementAndGet()
+                val payload = Json.parseToJsonElement(body).jsonObject
+                val userMessage = payload.getValue("messages").jsonArray[1].jsonObject
+                val userContent = userMessage.getValue("content").jsonPrimitive.content
+                if (userContent.length > 1_000) {
+                    response(400, """{"error":"request exceeds context window"}""")
+                } else {
+                    response(200, """{"choices":[{"message":{"content":"Use LM Studio context\n\n- Parse v1 model lists correctly"}}]}""")
+                }
+            },
+        )
+
+        server.use {
+            val diff = buildString {
+                repeat(120) { fileIndex ->
+                    append("diff --git a/file$fileIndex.txt b/file$fileIndex.txt\n")
+                    append("@@ -1 +1 @@\n")
+                    append("-line $fileIndex old content that keeps growing to pressure the prompt budget\n")
+                    append("+line $fileIndex new content that keeps growing to pressure the prompt budget\n")
+                }
+            }
+
+            val service = LlmService(client)
+            val result = service.generateCommitMessage(server.baseUrl, "model", diff)
+
+            assertTrue(result.isSuccess)
+            assertEquals(1, completionCalls.get())
+        }
+    }
+
     private fun testServer(
         modelsResponse: String,
+        modelDetailResponse: Response = response(200, """{"id":"model","context_length":32768}"""),
+        additionalContexts: Map<String, Response> = emptyMap(),
         completionHandler: (body: String, exchange: HttpExchange) -> Response,
     ): TestServer {
         val server = HttpServer.create(InetSocketAddress(0), 0)
@@ -222,7 +267,12 @@ class LlmServiceTest {
             exchange.respond(response(200, modelsResponse))
         }
         server.createContext("/v1/models/model") { exchange ->
-            exchange.respond(response(200, """{"id":"model","context_length":32768}"""))
+            exchange.respond(modelDetailResponse)
+        }
+        additionalContexts.forEach { (path, response) ->
+            server.createContext(path) { exchange ->
+                exchange.respond(response)
+            }
         }
         server.createContext("/v1/chat/completions") { exchange ->
             val body = exchange.requestBody.bufferedReader().use { it.readText() }
