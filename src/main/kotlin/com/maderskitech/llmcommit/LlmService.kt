@@ -146,10 +146,12 @@ class LlmService(
     }
 
     private fun discoverProviderContextWindow(address: String, model: String): ModelContextWindow? {
-        val endpoints = listOf(
-            "${address.trimEnd('/')}/models",
-            "${address.trimEnd('/')}/models/$model",
-        )
+        val base = address.trimEnd('/')
+        val lmStudioEndpoints = if (base.endsWith("/v1")) {
+            val root = base.dropLast(3)
+            listOf("$root/api/v1/models/$model", "$root/api/v0/models/$model")
+        } else emptyList()
+        val endpoints = listOf("$base/models", "$base/models/$model") + lmStudioEndpoints
 
         endpoints.forEach { endpoint ->
             runCatching {
@@ -206,7 +208,7 @@ class LlmService(
         val baseInputBudget = (
             contextWindow.tokens - COMMIT_OUTPUT_RESERVE_TOKENS - PROMPT_OVERHEAD_TOKENS - safetyBufferTokens
             ).coerceAtLeast(MIN_INPUT_BUDGET_TOKENS)
-        val usableInputTokens = (baseInputBudget * attemptRatio).toInt().coerceAtLeast(MIN_INPUT_BUDGET_TOKENS)
+        val usableInputTokens = (baseInputBudget * attemptRatio).toInt().coerceAtLeast(1)
         return ModelPromptBudget(usableInputTokens = usableInputTokens, attempt = attempt)
     }
 
@@ -348,18 +350,10 @@ internal object PromptCompactor {
 
         val compacted = if (builder.isNotEmpty()) builder.toString() else truncateSection(diff, maxChars)
         val includedSections = countIncludedSections(compacted)
-        return buildString {
-            append("[diff truncated to fit model context: ")
-            append(diff.length)
-            append(" chars across ")
-            append(sections.size)
-            append(" file patch(es); sending ")
-            append(compacted.length)
-            append(" chars across ")
-            append(includedSections)
-            append(" patch(es)]\n\n")
-            append(compacted)
-        }
+        val notice = "[diff truncated to fit model context: ${diff.length} chars across ${sections.size}" +
+            " file patch(es); sending ${compacted.length} chars across $includedSections patch(es)]\n\n"
+        val contentBudget = maxChars - notice.length
+        return if (contentBudget <= 0) notice.take(maxChars) else notice + compacted.take(contentBudget)
     }
 
     private fun splitDiffSections(diff: String): List<String> {
