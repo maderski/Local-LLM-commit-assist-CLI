@@ -78,6 +78,7 @@ class LlmService(
             val payload = buildJsonObject {
                 put("model", model)
                 put("temperature", JsonPrimitive(temperature))
+                put("max_tokens", JsonPrimitive(COMMIT_OUTPUT_RESERVE_TOKENS))
                 put("messages", buildMessages(budget))
             }
 
@@ -207,7 +208,7 @@ class LlmService(
         val safetyBufferTokens = maxOf(MIN_SAFETY_BUFFER_TOKENS, contextWindow.tokens / 10)
         val baseInputBudget = (
             contextWindow.tokens - COMMIT_OUTPUT_RESERVE_TOKENS - PROMPT_OVERHEAD_TOKENS - safetyBufferTokens
-            ).coerceAtLeast(MIN_INPUT_BUDGET_TOKENS)
+            ).coerceAtLeast(1)
         val usableInputTokens = (baseInputBudget * attemptRatio).toInt().coerceAtLeast(1)
         return ModelPromptBudget(usableInputTokens = usableInputTokens, attempt = attempt)
     }
@@ -287,7 +288,6 @@ class LlmService(
     private companion object {
         private const val DEFAULT_CONTEXT_WINDOW_TOKENS = 8_192
         private const val MIN_CONTEXT_WINDOW_TOKENS = 256
-        private const val MIN_INPUT_BUDGET_TOKENS = 1_024
         private const val MIN_SAFETY_BUFFER_TOKENS = 768
         private const val PROMPT_OVERHEAD_TOKENS = 512
         private const val COMMIT_OUTPUT_RESERVE_TOKENS = 700

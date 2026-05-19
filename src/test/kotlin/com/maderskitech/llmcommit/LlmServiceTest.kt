@@ -10,6 +10,10 @@ import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 class LlmServiceTest {
     private val client = HttpClient.newBuilder()
@@ -63,6 +67,31 @@ class LlmServiceTest {
 
             assertTrue(result.isSuccess)
             assertContains(requestBody, "[diff truncated to fit model context:")
+        }
+    }
+
+    @Test
+    fun generateCommitMessage_setsMaxTokensToReservedCompletionBudget() {
+        var requestBody = ""
+        val server = testServer(
+            modelsResponse = """{"data":[{"id":"model","context_length":32768}]}""",
+            completionHandler = { body, _ ->
+                requestBody = body
+                response(200, """{"choices":[{"message":{"content":"Bound completion budget\n\n- Limit completion tokens explicitly"}}]}""")
+            },
+        )
+
+        server.use {
+            val service = LlmService(client)
+            val result = service.generateCommitMessage(
+                address = server.baseUrl,
+                modelName = "model",
+                diff = "diff --git a/file.txt b/file.txt\n@@ -1 +1 @@\n-old\n+new",
+            )
+
+            assertTrue(result.isSuccess)
+            val payload = Json.parseToJsonElement(requestBody).jsonObject
+            assertEquals("700", payload.getValue("max_tokens").jsonPrimitive.content)
         }
     }
 
@@ -145,6 +174,42 @@ class LlmServiceTest {
             assertTrue(result.isSuccess)
             assertEquals(2, completionCalls.get())
             assertTrue(requestBodies[1].length < requestBodies[0].length)
+        }
+    }
+
+    @Test
+    fun generateCommitMessage_respectsTinyContextWindowsWithoutInflatingInputBudget() {
+        val completionCalls = AtomicInteger(0)
+        val server = testServer(
+            modelsResponse = """{"data":[{"id":"model","context_length":2048}]}""",
+            completionHandler = { body, _ ->
+                completionCalls.incrementAndGet()
+                val payload = Json.parseToJsonElement(body).jsonObject
+                val userMessage = payload.getValue("messages").jsonArray[1].jsonObject
+                val userContent = userMessage.getValue("content").jsonPrimitive.content
+                if (userContent.length > 1_000) {
+                    response(400, """{"error":"request exceeds context window"}""")
+                } else {
+                    response(200, """{"choices":[{"message":{"content":"Fit tiny context\n\n- Keep prompts inside small model windows"}}]}""")
+                }
+            },
+        )
+
+        server.use {
+            val diff = buildString {
+                repeat(120) { fileIndex ->
+                    append("diff --git a/file$fileIndex.txt b/file$fileIndex.txt\n")
+                    append("@@ -1 +1 @@\n")
+                    append("-line $fileIndex old content that keeps growing to pressure the prompt budget\n")
+                    append("+line $fileIndex new content that keeps growing to pressure the prompt budget\n")
+                }
+            }
+
+            val service = LlmService(client)
+            val result = service.generateCommitMessage(server.baseUrl, "model", diff)
+
+            assertTrue(result.isSuccess)
+            assertEquals(1, completionCalls.get())
         }
     }
 
