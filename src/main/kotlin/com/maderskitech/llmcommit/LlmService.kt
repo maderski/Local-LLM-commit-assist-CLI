@@ -139,12 +139,10 @@ class LlmService(
         val cacheKey = "${address.trimEnd('/')}\n$model"
         providerContextCache[cacheKey]?.let { return it }
 
-        discoverProviderContextWindow(address, model)?.let { detected ->
-            providerContextCache[cacheKey] = detected
-            return detected
-        }
-
-        return ModelContextWindow(DEFAULT_CONTEXT_WINDOW_TOKENS)
+        val resolved = discoverProviderContextWindow(address, model)
+            ?: ModelContextWindow(DEFAULT_CONTEXT_WINDOW_TOKENS)
+        providerContextCache[cacheKey] = resolved
+        return resolved
     }
 
     private fun discoverProviderContextWindow(address: String, model: String): ModelContextWindow? {
@@ -179,7 +177,6 @@ class LlmService(
             data?.firstOrNull { element ->
                 (element as? JsonObject)?.get("id")?.jsonPrimitive?.contentOrNull() == model
             }?.let { candidates += it }
-            data?.let { candidates.add(it) }
         }
         candidates += root
 
@@ -195,7 +192,6 @@ class LlmService(
             CONTEXT_WINDOW_KEYS.asSequence()
                 .mapNotNull { key -> element[key]?.let(::findContextWindowTokens) }
                 .firstOrNull()
-                ?: element.entries.asSequence().mapNotNull { (_, value) -> findContextWindowTokens(value) }.firstOrNull()
         }
     }
 
@@ -216,7 +212,7 @@ class LlmService(
 
     private fun isContextOverflowError(statusCode: Int, body: String): Boolean {
         val normalized = body.lowercase()
-        return statusCode == 400 && CONTEXT_OVERFLOW_MARKERS.any { it in normalized }
+        return statusCode in setOf(400, 413, 422) && CONTEXT_OVERFLOW_MARKERS.any { it in normalized }
     }
 
     private fun buildApiError(statusCode: Int, body: String): String {
@@ -288,7 +284,7 @@ class LlmService(
 
     private companion object {
         private const val DEFAULT_CONTEXT_WINDOW_TOKENS = 8_192
-        private const val MIN_CONTEXT_WINDOW_TOKENS = 4_096
+        private const val MIN_CONTEXT_WINDOW_TOKENS = 256
         private const val MIN_INPUT_BUDGET_TOKENS = 1_024
         private const val MIN_SAFETY_BUFFER_TOKENS = 768
         private const val PROMPT_OVERHEAD_TOKENS = 512
@@ -390,12 +386,15 @@ internal object PromptCompactor {
 
     private fun truncateSection(section: String, maxChars: Int): String {
         if (section.length <= maxChars) return section
+        val hasHunk = section.lineSequence().any { it.trimStart().startsWith("@@") }
+        if (!hasHunk) return truncateMiddle(section, maxChars)
         val header = section.lineSequence()
             .takeWhile { !it.trimStart().startsWith("@@") }
             .joinToString("\n")
             .trimEnd()
         val headerWithSpacing = if (header.isBlank()) "" else "$header\n"
-        val remaining = (maxChars - headerWithSpacing.length).coerceAtLeast(256)
+        val remaining = maxChars - headerWithSpacing.length
+        if (remaining <= 0) return headerWithSpacing.take(maxChars)
         val body = section.removePrefix(headerWithSpacing)
         return headerWithSpacing + truncateMiddle(body, remaining)
     }
