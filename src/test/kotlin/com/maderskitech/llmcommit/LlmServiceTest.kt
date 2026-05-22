@@ -214,6 +214,112 @@ class LlmServiceTest {
     }
 
     @Test
+    fun generateCommitMessage_shrinksEffectiveContextAfterOverflowOnDefaultWindow() {
+        val completionCalls = AtomicInteger(0)
+        val requestBodies = mutableListOf<String>()
+        val server = testServer(
+            modelsResponse = """{"data":[]}""",
+            modelDetailResponse = response(404, ""),
+            completionHandler = { body, _ ->
+                requestBodies += body
+                when (completionCalls.incrementAndGet()) {
+                    1 -> response(400, """{"error":"request exceeds context window"}""")
+                    else -> response(200, """{"choices":[{"message":{"content":"Adaptive shrink\n\n- Reduce context after overflow"}}]}""")
+                }
+            },
+        )
+
+        server.use {
+            val diff = buildString {
+                repeat(500) { fileIndex ->
+                    append("diff --git a/file$fileIndex.txt b/file$fileIndex.txt\n")
+                    append("@@ -1 +1 @@\n")
+                    append("+content $fileIndex repeated to fill up the default context window budget\n")
+                }
+            }
+
+            val service = LlmService(client)
+            val result = service.generateCommitMessage(server.baseUrl, "model", diff)
+
+            assertTrue(result.isSuccess)
+            assertEquals(2, completionCalls.get())
+            assertTrue(requestBodies[1].length < requestBodies[0].length)
+        }
+    }
+
+    @Test
+    fun generateCommitMessage_usesSoleListedModelWhenConfiguredModelNotFound() {
+        val completionCalls = AtomicInteger(0)
+        val server = testServer(
+            modelsResponse = """{"data":[{"id":"actual-loaded-model","context_length":2048}]}""",
+            completionHandler = { body, _ ->
+                completionCalls.incrementAndGet()
+                val payload = Json.parseToJsonElement(body).jsonObject
+                val userContent = payload.getValue("messages").jsonArray[1].jsonObject
+                    .getValue("content").jsonPrimitive.content
+                if (userContent.length > 1_000) {
+                    response(400, """{"error":"request exceeds context window"}""")
+                } else {
+                    response(200, """{"choices":[{"message":{"content":"Sole model match\n\n- Use single listed model context"}}]}""")
+                }
+            },
+        )
+
+        server.use {
+            val diff = buildString {
+                repeat(120) { fileIndex ->
+                    append("diff --git a/file$fileIndex.txt b/file$fileIndex.txt\n")
+                    append("@@ -1 +1 @@\n")
+                    append("-line $fileIndex old content that keeps growing to pressure the prompt budget\n")
+                    append("+line $fileIndex new content that keeps growing to pressure the prompt budget\n")
+                }
+            }
+
+            val service = LlmService(client)
+            val result = service.generateCommitMessage(server.baseUrl, "model", diff)
+
+            assertTrue(result.isSuccess)
+            assertEquals(1, completionCalls.get())
+        }
+    }
+
+    @Test
+    fun generateCommitMessage_discoversContextForModelWithPathSeparatorViaListEndpoint() {
+        val completionCalls = AtomicInteger(0)
+        val server = testServer(
+            modelsResponse = """{"data":[{"id":"org/model","context_length":2048}]}""",
+            completionHandler = { body, _ ->
+                completionCalls.incrementAndGet()
+                val payload = Json.parseToJsonElement(body).jsonObject
+                val userContent = payload.getValue("messages").jsonArray[1].jsonObject
+                    .getValue("content").jsonPrimitive.content
+                if (userContent.length > 1_000) {
+                    response(400, """{"error":"request exceeds context window"}""")
+                } else {
+                    response(200, """{"choices":[{"message":{"content":"Encode model path\n\n- Handle slash in model name"}}]}""")
+                }
+            },
+        )
+
+        server.use {
+            val diff = buildString {
+                repeat(120) { fileIndex ->
+                    append("diff --git a/file$fileIndex.txt b/file$fileIndex.txt\n")
+                    append("@@ -1 +1 @@\n")
+                    append("-line $fileIndex old content that keeps growing to pressure the prompt budget\n")
+                    append("+line $fileIndex new content that keeps growing to pressure the prompt budget\n")
+                }
+            }
+
+            val service = LlmService(client)
+            val result = service.generateCommitMessage(server.baseUrl, "org/model", diff)
+
+            assertTrue(result.isSuccess)
+            assertEquals(1, completionCalls.get())
+        }
+    }
+
+    @Test
     fun generateCommitMessage_parsesLmStudioV1ModelLists() {
         val completionCalls = AtomicInteger(0)
         val server = testServer(

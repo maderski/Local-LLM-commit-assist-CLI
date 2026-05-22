@@ -1,6 +1,7 @@
 package com.maderskitech.llmcommit
 
 import java.net.URI
+import java.net.URLEncoder
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
@@ -72,9 +73,11 @@ class LlmService(
         temperature: Double = 0.3,
         buildMessages: (ModelPromptBudget) -> JsonArray,
     ): String {
+        val cacheKey = "${address.trimEnd('/')}\n$model"
+        var effectiveContextWindow = contextWindow
         var lastApiError = ""
         for ((index, ratio) in INPUT_BUDGET_ATTEMPT_RATIOS.withIndex()) {
-            val budget = createPromptBudget(contextWindow, ratio, index + 1)
+            val budget = createPromptBudget(effectiveContextWindow, ratio, index + 1)
             val payload = buildJsonObject {
                 put("model", model)
                 put("temperature", JsonPrimitive(temperature))
@@ -98,6 +101,10 @@ class LlmService(
             if (!isContextOverflowError(response.statusCode(), response.body())) {
                 error(lastApiError)
             }
+            effectiveContextWindow = ModelContextWindow(
+                (effectiveContextWindow.tokens / 2).coerceAtLeast(MIN_CONTEXT_WINDOW_TOKENS)
+            )
+            providerContextCache[cacheKey] = effectiveContextWindow
         }
 
         error(
@@ -148,11 +155,12 @@ class LlmService(
 
     private fun discoverProviderContextWindow(address: String, model: String): ModelContextWindow? {
         val base = address.trimEnd('/')
+        val encodedModel = URLEncoder.encode(model, "UTF-8").replace("+", "%20")
         val lmStudioEndpoints = if (base.endsWith("/v1")) {
             val root = base.dropLast(3)
-            listOf("$root/api/v1/models", "$root/api/v1/models/$model", "$root/api/v0/models/$model")
+            listOf("$root/api/v1/models", "$root/api/v1/models/$encodedModel", "$root/api/v0/models/$encodedModel")
         } else emptyList()
-        val endpoints = listOf("$base/models", "$base/models/$model") + lmStudioEndpoints
+        val endpoints = listOf("$base/models", "$base/models/$encodedModel") + lmStudioEndpoints
 
         endpoints.forEach { endpoint ->
             runCatching {
@@ -177,22 +185,32 @@ class LlmService(
         val candidates = mutableListOf<JsonElement>()
         if (root is JsonObject) {
             val data = root["data"] as? JsonArray
-            data?.firstOrNull { element ->
+            val dataMatch = data?.firstOrNull { element ->
                 (element as? JsonObject)?.get("id")?.jsonPrimitive?.contentOrNull() == model
-            }?.let { candidate ->
-                candidates += candidate
-                (candidate as? JsonObject)?.get("config")?.let(candidates::add)
+            }
+            if (dataMatch != null) {
+                candidates += dataMatch
+                (dataMatch as? JsonObject)?.get("config")?.let(candidates::add)
+            } else if (data?.size == 1) {
+                val sole = data[0]
+                candidates += sole
+                (sole as? JsonObject)?.get("config")?.let(candidates::add)
             }
 
             val models = root["models"] as? JsonArray
-            models?.firstOrNull { element ->
+            val modelsMatch = models?.firstOrNull { element ->
                 val candidate = element as? JsonObject ?: return@firstOrNull false
                 val id = candidate["id"]?.jsonPrimitive?.contentOrNull()
                 val key = candidate["key"]?.jsonPrimitive?.contentOrNull()
                 id == model || key == model
-            }?.let { candidate ->
-                candidates += candidate
-                (candidate as? JsonObject)?.get("config")?.let(candidates::add)
+            }
+            if (modelsMatch != null) {
+                candidates += modelsMatch
+                (modelsMatch as? JsonObject)?.get("config")?.let(candidates::add)
+            } else if (models?.size == 1) {
+                val sole = models[0]
+                candidates += sole
+                (sole as? JsonObject)?.get("config")?.let(candidates::add)
             }
         }
         candidates += root
