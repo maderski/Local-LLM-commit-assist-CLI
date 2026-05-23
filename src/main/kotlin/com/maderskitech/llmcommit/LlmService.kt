@@ -79,10 +79,11 @@ class LlmService(
         for ((index, ratio) in INPUT_BUDGET_ATTEMPT_RATIOS.withIndex()) {
             val budget = createPromptBudget(effectiveContextWindow, ratio, index + 1)
             val maxTokensKey = if (isOSeriesModel(model)) "max_completion_tokens" else "max_tokens"
+            val completionTokens = minOf(COMMIT_OUTPUT_RESERVE_TOKENS, effectiveContextWindow.tokens - budget.usableInputTokens).coerceAtLeast(1)
             val payload = buildJsonObject {
                 put("model", model)
                 put("temperature", JsonPrimitive(temperature))
-                put(maxTokensKey, JsonPrimitive(COMMIT_OUTPUT_RESERVE_TOKENS))
+                put(maxTokensKey, JsonPrimitive(completionTokens))
                 put("messages", buildMessages(budget))
             }
 
