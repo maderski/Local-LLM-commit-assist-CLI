@@ -105,7 +105,6 @@ class LlmService(
             effectiveContextWindow = ModelContextWindow(
                 (effectiveContextWindow.tokens / 2).coerceAtLeast(MIN_CONTEXT_WINDOW_TOKENS)
             )
-            providerContextCache[cacheKey] = effectiveContextWindow
         }
 
         error(
