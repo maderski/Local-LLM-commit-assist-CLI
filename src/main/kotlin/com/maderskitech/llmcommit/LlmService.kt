@@ -78,10 +78,11 @@ class LlmService(
         var lastApiError = ""
         for ((index, ratio) in INPUT_BUDGET_ATTEMPT_RATIOS.withIndex()) {
             val budget = createPromptBudget(effectiveContextWindow, ratio, index + 1)
+            val maxTokensKey = if (isOSeriesModel(model)) "max_completion_tokens" else "max_tokens"
             val payload = buildJsonObject {
                 put("model", model)
                 put("temperature", JsonPrimitive(temperature))
-                put("max_tokens", JsonPrimitive(COMMIT_OUTPUT_RESERVE_TOKENS))
+                put(maxTokensKey, JsonPrimitive(COMMIT_OUTPUT_RESERVE_TOKENS))
                 put("messages", buildMessages(budget))
             }
 
@@ -244,6 +245,9 @@ class LlmService(
         val usableInputTokens = (baseInputBudget * attemptRatio).toInt().coerceAtLeast(1)
         return ModelPromptBudget(usableInputTokens = usableInputTokens, attempt = attempt)
     }
+
+    private fun isOSeriesModel(model: String): Boolean =
+        model.trimStart().lowercase().let { it.matches(Regex("o\\d+.*")) }
 
     private fun isContextOverflowError(statusCode: Int, body: String): Boolean {
         val normalized = body.lowercase()
