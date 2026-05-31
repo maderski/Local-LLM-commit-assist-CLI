@@ -106,6 +106,7 @@ class LlmService(
             effectiveContextWindow = ModelContextWindow(
                 (effectiveContextWindow.tokens / 2).coerceAtLeast(MIN_CONTEXT_WINDOW_TOKENS)
             )
+            providerContextCache[cacheKey] = effectiveContextWindow
         }
 
         error(
@@ -446,5 +447,5 @@ internal object PromptCompactor {
         text.lineSequence().count { it.trimStart().startsWith("diff --git ") }.coerceAtLeast(1)
 
     private fun tokenBudgetToChars(maxTokens: Int): Int =
-        ceil(maxTokens * CHARS_PER_TOKEN_ESTIMATE).toInt().coerceAtLeast(256)
+        ceil(maxTokens * CHARS_PER_TOKEN_ESTIMATE).toInt().coerceAtLeast(1)
 }
