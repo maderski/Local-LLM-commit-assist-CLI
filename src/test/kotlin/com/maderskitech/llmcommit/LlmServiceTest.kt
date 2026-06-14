@@ -9,6 +9,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
@@ -359,6 +360,236 @@ class LlmServiceTest {
 
             assertTrue(result.isSuccess)
             assertEquals(1, completionCalls.get())
+        }
+    }
+
+    @Test
+    fun generateCommitMessage_failsAfterAllRetriesExhausted() {
+        val completionCalls = AtomicInteger(0)
+        val server = testServer(
+            modelsResponse = """{"data":[{"id":"model","context_length":4096}]}""",
+            completionHandler = { _, _ ->
+                completionCalls.incrementAndGet()
+                response(400, """{"error":"request exceeds context window"}""")
+            },
+        )
+
+        server.use {
+            val service = LlmService(client)
+            val result = service.generateCommitMessage(
+                address = server.baseUrl,
+                modelName = "model",
+                diff = "diff --git a/f.txt b/f.txt\n@@ -1 +1 @@\n-old\n+new",
+            )
+
+            assertTrue(result.isFailure)
+            assertEquals(3, completionCalls.get())
+            assertContains(result.exceptionOrNull()!!.message!!, "after 3 attempt(s)")
+        }
+    }
+
+    @Test
+    fun generateCommitMessage_failsFastOnNonOverflowApiError() {
+        val completionCalls = AtomicInteger(0)
+        val server = testServer(
+            modelsResponse = """{"data":[{"id":"model","context_length":32768}]}""",
+            completionHandler = { _, _ ->
+                completionCalls.incrementAndGet()
+                response(401, """{"error":"unauthorized"}""")
+            },
+        )
+
+        server.use {
+            val service = LlmService(client)
+            val result = service.generateCommitMessage(
+                address = server.baseUrl,
+                modelName = "model",
+                diff = "diff --git a/f.txt b/f.txt\n@@ -1 +1 @@\n-old\n+new",
+            )
+
+            assertTrue(result.isFailure)
+            assertEquals(1, completionCalls.get())
+            assertContains(result.exceptionOrNull()!!.message!!, "401")
+        }
+    }
+
+    @Test
+    fun generateCommitMessage_usesMaxCompletionTokensForOSeriesModel() {
+        var requestBody = ""
+        val server = testServer(
+            modelsResponse = """{"data":[{"id":"o3","context_length":32768}]}""",
+            completionHandler = { body, _ ->
+                requestBody = body
+                response(200, """{"choices":[{"message":{"content":"Fix bug\n\n- Resolve null pointer"}}]}""")
+            },
+        )
+
+        server.use {
+            val service = LlmService(client)
+            val result = service.generateCommitMessage(
+                address = server.baseUrl,
+                modelName = "o3",
+                diff = "diff --git a/f.txt b/f.txt\n@@ -1 +1 @@\n-old\n+new",
+            )
+
+            assertTrue(result.isSuccess)
+            val payload = Json.parseToJsonElement(requestBody).jsonObject
+            assertTrue("max_completion_tokens" in payload)
+            assertFalse("max_tokens" in payload)
+        }
+    }
+
+    @Test
+    fun generateCommitMessage_returnsDefaultSummaryForBlankContent() {
+        val server = testServer(
+            modelsResponse = """{"data":[{"id":"model","context_length":32768}]}""",
+            completionHandler = { _, _ ->
+                response(200, """{"choices":[{"message":{"content":"   "}}]}""")
+            },
+        )
+
+        server.use {
+            val service = LlmService(client)
+            val result = service.generateCommitMessage(
+                address = server.baseUrl,
+                modelName = "model",
+                diff = "diff --git a/f.txt b/f.txt\n@@ -1 +1 @@\n-old\n+new",
+            )
+
+            assertTrue(result.isSuccess)
+            assertEquals("Update project files", result.getOrThrow().summary)
+            assertEquals("", result.getOrThrow().description)
+        }
+    }
+
+    @Test
+    fun generateCommitMessage_stripsMarkdownFencedJsonFromResponse() {
+        val server = testServer(
+            modelsResponse = """{"data":[{"id":"model","context_length":32768}]}""",
+            completionHandler = { _, _ ->
+                response(200, """{"choices":[{"message":{"content":"```json\n{\"summary\":\"Add feature\",\"description\":\"- New endpoint\"}\n```"}}]}""")
+            },
+        )
+
+        server.use {
+            val service = LlmService(client)
+            val result = service.generateCommitMessage(
+                address = server.baseUrl,
+                modelName = "model",
+                diff = "diff --git a/f.txt b/f.txt\n@@ -1 +1 @@\n-old\n+new",
+            )
+
+            assertTrue(result.isSuccess)
+            assertEquals("Add feature", result.getOrThrow().summary)
+            assertEquals("- New endpoint", result.getOrThrow().description)
+        }
+    }
+
+    @Test
+    fun generateCommitMessage_splitsOnEmDashSeparator() {
+        val server = testServer(
+            modelsResponse = """{"data":[{"id":"model","context_length":32768}]}""",
+            completionHandler = { _, _ ->
+                response(200, """{"choices":[{"message":{"content":"Fix login — resolve session timeout"}}]}""")
+            },
+        )
+
+        server.use {
+            val service = LlmService(client)
+            val result = service.generateCommitMessage(
+                address = server.baseUrl,
+                modelName = "model",
+                diff = "diff --git a/f.txt b/f.txt\n@@ -1 +1 @@\n-old\n+new",
+            )
+
+            assertTrue(result.isSuccess)
+            assertEquals("Fix login", result.getOrThrow().summary)
+            assertEquals("- resolve session timeout", result.getOrThrow().description)
+        }
+    }
+
+    @Test
+    fun generateCommitMessage_splitsOnColonSeparator() {
+        val server = testServer(
+            modelsResponse = """{"data":[{"id":"model","context_length":32768}]}""",
+            completionHandler = { _, _ ->
+                response(200, """{"choices":[{"message":{"content":"Fix login: resolve session timeout"}}]}""")
+            },
+        )
+
+        server.use {
+            val service = LlmService(client)
+            val result = service.generateCommitMessage(
+                address = server.baseUrl,
+                modelName = "model",
+                diff = "diff --git a/f.txt b/f.txt\n@@ -1 +1 @@\n-old\n+new",
+            )
+
+            assertTrue(result.isSuccess)
+            assertEquals("Fix login", result.getOrThrow().summary)
+            assertEquals("- resolve session timeout", result.getOrThrow().description)
+        }
+    }
+
+    @Test
+    fun generateCommitMessage_treatsStatus413AsContextOverflow() {
+        val completionCalls = AtomicInteger(0)
+        val server = testServer(
+            modelsResponse = """{"data":[{"id":"model","context_length":32768}]}""",
+            completionHandler = { _, _ ->
+                when (completionCalls.incrementAndGet()) {
+                    1 -> response(413, """{"error":"request too large"}""")
+                    else -> response(200, """{"choices":[{"message":{"content":"Retry after 413\n\n- Handle payload too large"}}]}""")
+                }
+            },
+        )
+
+        server.use {
+            val service = LlmService(client)
+            val result = service.generateCommitMessage(
+                address = server.baseUrl,
+                modelName = "model",
+                diff = "diff --git a/f.txt b/f.txt\n@@ -1 +1 @@\n-old\n+new",
+            )
+
+            assertTrue(result.isSuccess)
+            assertEquals(2, completionCalls.get())
+        }
+    }
+
+    @Test
+    fun generateCommitMessage_reusesContextWindowCacheOnSubsequentCall() {
+        val modelsCalls = AtomicInteger(0)
+        val httpServer = HttpServer.create(InetSocketAddress(0), 0)
+        httpServer.createContext("/v1/models") { exchange ->
+            modelsCalls.incrementAndGet()
+            val body = """{"data":[{"id":"model","context_length":32768}]}""".toByteArray()
+            exchange.responseHeaders.add("Content-Type", "application/json")
+            exchange.sendResponseHeaders(200, body.size.toLong())
+            exchange.responseBody.use { it.write(body) }
+            exchange.close()
+        }
+        httpServer.createContext("/v1/chat/completions") { exchange ->
+            exchange.requestBody.bufferedReader().use { it.readText() }
+            val body = """{"choices":[{"message":{"content":"Fix bug\n\n- Resolve issue"}}]}""".toByteArray()
+            exchange.responseHeaders.add("Content-Type", "application/json")
+            exchange.sendResponseHeaders(200, body.size.toLong())
+            exchange.responseBody.use { it.write(body) }
+            exchange.close()
+        }
+        httpServer.start()
+
+        try {
+            val baseUrl = "http://localhost:${httpServer.address.port}/v1"
+            val service = LlmService(client)
+            val diff = "diff --git a/f.txt b/f.txt\n@@ -1 +1 @@\n-old\n+new"
+
+            assertTrue(service.generateCommitMessage(baseUrl, "model", diff).isSuccess)
+            assertTrue(service.generateCommitMessage(baseUrl, "model", diff).isSuccess)
+
+            assertEquals(1, modelsCalls.get())
+        } finally {
+            httpServer.stop(0)
         }
     }
 
