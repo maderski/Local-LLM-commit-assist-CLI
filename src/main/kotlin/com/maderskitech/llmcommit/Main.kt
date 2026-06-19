@@ -42,13 +42,18 @@ class LlmCommitCli(
         val model = config.modelName.ifBlank { "local-model" }
 
         println("Testing local LLM at ${config.llmAddress} using model $model...")
-        val response = llmService.testConnection(config.llmAddress, config.modelName).getOrElse { error ->
-            System.err.println("LLM test failed: ${error.message}")
+        val startedAt = System.nanoTime()
+        val result = llmService.testConnection(config.llmAddress, config.modelName)
+        val elapsedMs = (System.nanoTime() - startedAt) / 1_000_000
+        val response = result.getOrElse { error ->
+            System.err.println("LLM test failed after $elapsedMs ms: ${error.message ?: error::class.simpleName}")
             return 1
         }
 
         println("LLM response:")
         println(response)
+        println()
+        println("Response time: $elapsedMs ms")
         return 0
     }
 
