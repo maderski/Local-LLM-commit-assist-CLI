@@ -22,6 +22,27 @@ class LlmServiceTest {
         .build()
 
     @Test
+    fun testConnection_sendsHelloPromptAndReturnsModelResponse() {
+        var requestBody = ""
+        val server = testServer(
+            modelsResponse = """{"data":[{"id":"model","context_length":32768}]}""",
+            completionHandler = { body, _ ->
+                requestBody = body
+                response(200, """{"choices":[{"message":{"content":"Hello received."}}]}""")
+            },
+        )
+
+        server.use {
+            val service = LlmService(client)
+            val result = service.testConnection(server.baseUrl, "model")
+
+            assertTrue(result.isSuccess)
+            assertEquals("Hello received.", result.getOrThrow())
+            assertContains(requestBody, "Hello. Reply with a brief confirmation")
+        }
+    }
+
+    @Test
     fun generateCommitMessage_includesNoReasoningInstructionInPrompt() {
         var requestBody = ""
         val server = testServer(

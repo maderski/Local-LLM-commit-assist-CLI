@@ -66,6 +66,22 @@ class LlmService(
         parseResponse(content)
     }
 
+    fun testConnection(address: String, modelName: String): Result<String> = runCatching {
+        val model = modelName.ifBlank { "local-model" }
+        val contextWindow = resolveModelContextWindow(address, model)
+        sendChatWithRetries(
+            address = address,
+            model = model,
+            contextWindow = contextWindow,
+            temperature = 0.0,
+        ) {
+            buildMessages(
+                systemPrompt = "You are a concise local LLM connectivity test.",
+                userPrompt = "Hello. Reply with a brief confirmation that you received this message.",
+            )
+        }
+    }
+
     private fun sendChatWithRetries(
         address: String,
         model: String,

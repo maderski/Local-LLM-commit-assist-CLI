@@ -27,6 +27,7 @@ class LlmCommitCli(
     fun run(args: List<String>): Int {
         return when {
             args.isEmpty() -> runCommit(emptyList())
+            args == listOf("--test") -> runConnectionTest()
             args.first() == "config" -> handleConfig(args.drop(1))
             args.first() == "help" || args.first() == "--help" || args.first() == "-h" -> {
                 printUsage()
@@ -34,6 +35,26 @@ class LlmCommitCli(
             }
             else -> runCommit(args)
         }
+    }
+
+    private fun runConnectionTest(): Int {
+        val config = configRepository.load()
+        val model = config.modelName.ifBlank { "local-model" }
+
+        println("Testing local LLM at ${config.llmAddress} using model $model...")
+        val startedAt = System.nanoTime()
+        val result = llmService.testConnection(config.llmAddress, config.modelName)
+        val elapsedMs = (System.nanoTime() - startedAt) / 1_000_000
+        val response = result.getOrElse { error ->
+            System.err.println("LLM test failed after $elapsedMs ms: ${error.message ?: error::class.simpleName}")
+            return 1
+        }
+
+        println("LLM response:")
+        println(response)
+        println()
+        println("Response time: $elapsedMs ms")
+        return 0
     }
 
     private fun runCommit(args: List<String>): Int {
@@ -196,6 +217,7 @@ class LlmCommitCli(
         println(
             """
             Usage:
+              llm-commit --test
               llm-commit [--push|--no-push] [--add-all|--no-add-all]
               llm-commit config show
               llm-commit config path
