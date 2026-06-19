@@ -59,6 +59,12 @@ From inside a git repository:
 llm-commit
 ```
 
+Test the configured local LLM without creating a commit:
+
+```shell
+llm-commit --test
+```
+
 Override behavior for one run:
 
 ```shell
